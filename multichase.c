@@ -802,7 +802,7 @@ int main(int argc, char **argv) {
     genchase_args.tlb_locality = genchase_args.total_memory;
   } else {
     genchase_args.total_memory -=
-        genchase_args.total_memory % genchase_args.tlb_locality;
+        genchase_args.total_memory % genchase_args.stride;
   }
 
   genchase_args.nr_mixer_indices =

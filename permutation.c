@@ -137,7 +137,7 @@ void generate_chase_mixer(struct generate_chase_common_args *args,
   args->mixer = r;
 }
 
-// Generate a pointer chasing sequence according to chase args. 
+// Generate a pointer chasing sequence according to chase args.
 void *generate_chase(const struct generate_chase_common_args *args,
                      size_t mixer_idx) {
   char *arena = args->arena;
@@ -148,9 +148,11 @@ void *generate_chase(const struct generate_chase_common_args *args,
   const perm_t *mixer = args->mixer + mixer_idx * args->nr_mixers;
   size_t nr_mixer_indices = args->nr_mixer_indices;
 
-  size_t nr_tlb_groups = total_memory / tlb_locality;
   size_t nr_elts_per_tlb = tlb_locality / stride;
   size_t nr_elts = total_memory / stride;
+  // Set TLB groups in this way to handle where tlb locality is not a multiple
+  // of stride
+  size_t nr_tlb_groups = (nr_elts + nr_elts_per_tlb - 1) / nr_elts_per_tlb;
   perm_t *tlb_perm;
   perm_t *perm;
   size_t i;
@@ -163,9 +165,17 @@ void *generate_chase(const struct generate_chase_common_args *args,
   tlb_perm = malloc(nr_tlb_groups * sizeof(*tlb_perm));
   gen_permutation(tlb_perm, nr_tlb_groups, 0);
   perm = malloc(nr_elts * sizeof(*perm));
+  size_t perm_idx = 0;
   for (i = 0; i < nr_tlb_groups; ++i) {
-    gen_permutation(&perm[i * nr_elts_per_tlb], nr_elts_per_tlb,
-                    tlb_perm[i] * nr_elts_per_tlb);
+    size_t group_start = tlb_perm[i] * nr_elts_per_tlb;
+    size_t nr_elts_in_group = nr_elts_per_tlb;
+    if (group_start + nr_elts_in_group > nr_elts) {
+      // Handles a potentially short tlb group in the last iteration.
+      assert(nr_elts > group_start);
+      nr_elts_in_group = nr_elts - group_start;
+    }
+    gen_permutation(&perm[perm_idx], nr_elts_in_group, group_start);
+    perm_idx += nr_elts_in_group;
   }
   free(tlb_perm);
 
@@ -211,9 +221,9 @@ void *generate_chase_long(const struct generate_chase_common_args *args,
   size_t nr_iteration = nr_mixer_indices / total_par;
   const perm_t *mixer = args->mixer + mixer_idx * nr_iteration * args->nr_mixers;
 
-  size_t nr_tlb_groups = total_memory / tlb_locality;
   size_t nr_elts_per_tlb = tlb_locality / stride;
   size_t nr_elts = total_memory / stride;
+  size_t nr_tlb_groups = (nr_elts + nr_elts_per_tlb - 1) / nr_elts_per_tlb;
   perm_t *tlb_perm;
   perm_t *perm;
   size_t i;
@@ -246,9 +256,17 @@ void *generate_chase_long(const struct generate_chase_common_args *args,
 
     gen_permutation(tlb_perm, nr_tlb_groups, 0);
 
+    size_t perm_idx = j * nr_elts;
     for (i = 0; i < nr_tlb_groups; ++i) {
-      gen_permutation(&perm[j * nr_elts + i * nr_elts_per_tlb], nr_elts_per_tlb,
-                    base + tlb_perm[i] * nr_elts_per_tlb);
+      size_t group_start = base + tlb_perm[i] * nr_elts_per_tlb;
+      size_t nr_elts_in_group = nr_elts_per_tlb;
+      if (tlb_perm[i] * nr_elts_per_tlb + nr_elts_in_group > nr_elts) {
+        // Handles a potentially short tlb group in the last iteration.
+        assert(nr_elts > tlb_perm[i] * nr_elts_per_tlb);
+        nr_elts_in_group = nr_elts - tlb_perm[i] * nr_elts_per_tlb;
+      }
+      gen_permutation(&perm[perm_idx], nr_elts_in_group, group_start);
+      perm_idx += nr_elts_in_group;
     }
     free(tlb_perm);
 

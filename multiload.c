@@ -69,6 +69,19 @@
   10000  // Data sample polling loop delay waiting for load threads to update
          // mutex variable
 
+#define CHECK_DUTY_CYCLE(interval_ns, active_ns) \
+  if (interval_ns > 0) { \
+    uint64_t now = now_nsec(); \
+    uint64_t pos = now % interval_ns; \
+    if (pos >= active_ns) { \
+      uint64_t sleep_us = (interval_ns - pos) / 1000; \
+      if (sleep_us > 0) { \
+        usleep(sleep_us); \
+      } \
+      continue; \
+    } \
+  }
+
 typedef enum { RUN_CHASE, RUN_BANDWIDTH, RUN_CHASE_LOADED } test_type_t;
 static volatile uint64_t use_result_dummy = 0x0123456789abcdef;
 
@@ -116,6 +129,8 @@ typedef union {
     volatile size_t sample_no;  // flag from main thread to tell bandwdith
                                 // thread to start the next sample.
     size_t delay;               // injection delay for load
+    uint64_t load_interval_ns;  // total interval in ns
+    uint64_t load_active_ns;    // active duration in ns
   } x;
 } per_thread_t;
 
@@ -465,7 +480,10 @@ static void load_memcpy_libc(per_thread_t *t) {
   register char *tmp;
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     tmp = a;
     a = b;
     b = tmp;
@@ -482,7 +500,10 @@ static void load_memset_libc(per_thread_t *t) {
   register char *a = (char *)t->x.load_arena;
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     memset((void *)a, 0xdeadbeef, load_bites);
     LOAD_MEMORY_SAMPLE_MIBPS
   } while (1);
@@ -496,7 +517,10 @@ static void load_memsetz_libc(per_thread_t *t) {
   register char *a = (char *)t->x.load_arena;
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     memset((void *)a, 0, load_bites);
     LOAD_MEMORY_SAMPLE_MIBPS
   } while (1);
@@ -535,7 +559,10 @@ static void load_stream_triad(per_thread_t *t) {
   }
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     tmp = a;
     a = b;
     b = c;
@@ -591,7 +618,10 @@ static void load_stream_triad_nontemporal_injection_delay(per_thread_t *t) {
   }
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     tmp = a;
     a = b;
     b = c;
@@ -627,7 +657,10 @@ static void load_stream_copy(per_thread_t *t) {
   register double *tmp;
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     tmp = a;
     a = b;
     b = tmp;
@@ -650,7 +683,10 @@ static void load_stream_sum(per_thread_t *t) {
   register uint64_t s = 0;
 
   LOAD_MEMORY_INIT_MIBPS
+  uint64_t interval_ns = t->x.load_interval_ns;
+  uint64_t active_ns = t->x.load_active_ns;
   do {
+    CHECK_DUTY_CYCLE(interval_ns, active_ns)
     for (i = 0; i < N; ++i) {
       s += a[i];
     }
@@ -873,6 +909,8 @@ int main(int argc, char **argv) {
   test_type_t run_test_type =
       RUN_CHASE;  // RUN_CHASE, RUN_BANDWIDTH, RUN_CHASE_LOADED
   struct generate_chase_common_args genchase_args;
+  uint64_t param_interval_us = 0;
+  uint64_t param_active_us = 0;
 
   default_page_size = page_size = get_native_page_size();
 
@@ -883,7 +921,7 @@ int main(int argc, char **argv) {
 
   setvbuf(stdout, NULL, _IOLBF, BUFSIZ);
 
-  while ((c = getopt(argc, argv, "ac:d:l:F:p:HLm:n:oO:S:s:T:t:vXyW:")) != -1) {
+  while ((c = getopt(argc, argv, "ac:d:l:F:p:HLm:n:oO:S:s:T:t:vXyW:i:u:")) != -1) {
     switch (c) {
       case 'a':
         print_average = 1;
@@ -1078,6 +1116,24 @@ int main(int argc, char **argv) {
       case 'y':
         print_timestamp = 1;
         break;
+      case 'i':
+        param_interval_us = strtoull(optarg, &p, 0);
+        if (*p) {
+          fprintf(stderr, "Error: interval must be a non-negative integer\n");
+          exit(1);
+        }
+        break;
+      case 'u':
+        param_active_us = strtoull(optarg, &p, 0);
+        if (*p) {
+          fprintf(stderr, "Error: active duration must be a non-negative integer\n");
+          exit(1);
+        }
+        if (param_active_us > param_interval_us) {
+          fprintf(stderr, "Error: active duration cannot be greater than interval\n");
+          exit(1);
+        }
+        break;
       default:
         goto usage;
     }
@@ -1163,6 +1219,10 @@ int main(int argc, char **argv) {
     fprintf(stderr,
             "-y       print timestamp in front of each line (default %u)\n",
             print_timestamp);
+    fprintf(stderr,
+            "-i interval_us total interval in microseconds for duty cycle\n");
+    fprintf(stderr,
+            "-u active_us   active duration in microseconds for duty cycle\n");
     exit(1);
   }
 
@@ -1259,6 +1319,8 @@ int main(int argc, char **argv) {
     thread_data[i].x.load_offset = offset;  // memory buffer offset
     thread_data[i].x.delay = delay;
     thread_data[i].x.use_longer_chase = use_longer_chase;
+    thread_data[i].x.load_interval_ns = param_interval_us * 1000;
+    thread_data[i].x.load_active_ns = param_active_us * 1000;
 
     if (run_test_type == RUN_CHASE_LOADED) {
       if (i == 0) {
